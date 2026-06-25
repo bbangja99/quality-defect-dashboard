@@ -2,6 +2,8 @@
 
 의료기기 제조 품질팀의 주간 생산·불량 Excel을 브라우저에서 자동 취합합니다.
 
+**웹앱:** https://bbangja99.github.io/quality-defect-dashboard/
+
 ## 주요 기능
 
 - 사출·연마·주사침·Kopac 원본 형식 자동 인식
