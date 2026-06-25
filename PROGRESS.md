@@ -19,6 +19,11 @@
 
 **→ 핵심 자동화 파이프라인(파서→집계→대시보드→마스터 재생성) 전 단계 완료.**
 
+### 배포
+- GitHub: **https://github.com/bbangja99/quality-defect-dashboard** (Private, branch `main`, 코드만 — 데이터 `.gitignore` 차단)
+- Streamlit Cloud: share.streamlit.io → 레포 연결, Main file `app.py`, Secrets에 `password` 설정(선택).
+  클라우드에선 로컬 폴더가 없어 **업로드 모드 기본**(`app.py`가 자동 전환).
+
 ## 2. 검증 결과 — 마스터 26-W25 정확 일치
 | 공정 | 투입 / 불량 / 불량률 |
 |---|---|
