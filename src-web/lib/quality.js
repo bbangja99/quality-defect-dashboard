@@ -136,3 +136,98 @@ export function pareto(details, process, week) {
     return { ...row, share: rate(row.defectQty, total), cumulative: rate(cumulative, total) };
   });
 }
+
+export function defectTypeTrend(details, process, weeks = 8, topN = 5) {
+  const filtered = details.filter((row) => !row.isLoss && (!process || row.process === process));
+  const weekNums = [...new Map(filtered.map((row) => [row.week, row.weekNum])).entries()]
+    .sort((a, b) => a[1] - b[1])
+    .slice(-weeks);
+  const selectedWeeks = new Set(weekNums.map(([week]) => week));
+  const typeTotals = new Map();
+  filtered.filter((row) => selectedWeeks.has(row.week)).forEach((row) => {
+    typeTotals.set(row.defectType, (typeTotals.get(row.defectType) || 0) + number(row.defectQty));
+  });
+  const types = [...typeTotals.entries()].sort((a, b) => b[1] - a[1]).slice(0, topN).map(([type]) => type);
+  const rows = weekNums.map(([week]) => {
+    const row = { week };
+    types.forEach((type) => { row[type] = 0; });
+    filtered.filter((item) => item.week === week && types.includes(item.defectType))
+      .forEach((item) => { row[item.defectType] += number(item.defectQty); });
+    return row;
+  });
+  return { types, rows };
+}
+
+export function processHeatmap(processWeeks, weeks = 8) {
+  const weekLabels = [...new Map(processWeeks.map((row) => [row.week, row.weekNum])).entries()]
+    .sort((a, b) => a[1] - b[1])
+    .slice(-weeks)
+    .map(([week]) => week);
+  const lookup = new Map(processWeeks.map((row) => [`${row.week}|${row.process}`, row]));
+  return {
+    weeks: weekLabels,
+    rows: PROCESS_ORDER.map((process) => ({
+      process,
+      cells: weekLabels.map((week) => lookup.get(`${week}|${process}`) || null),
+    })),
+  };
+}
+
+export function buildInsights(processWeeks, details, selectedWeek) {
+  const current = processWeeks.filter((row) => row.week === selectedWeek);
+  if (!current.length) return [];
+  const insights = [];
+  const worstDefect = [...current].sort((a, b) => b.defectRate - a.defectRate)[0];
+  const worstLoss = [...current].sort((a, b) => b.lossRate - a.lossRate)[0];
+  if (worstDefect) {
+    insights.push({
+      tone: "danger",
+      title: "최고 불량률 공정",
+      value: worstDefect.process,
+      detail: `${(worstDefect.defectRate * 100).toFixed(3)}% · ${Math.round(worstDefect.defectQty).toLocaleString("ko-KR")}건`,
+    });
+  }
+  if (worstLoss?.lossRate > 0) {
+    insights.push({
+      tone: "warning",
+      title: "최고 손실률 공정",
+      value: worstLoss.process,
+      detail: `${(worstLoss.lossRate * 100).toFixed(3)}% · 공정검사/세팅 ${Math.round(worstLoss.lossQty).toLocaleString("ko-KR")}건`,
+    });
+  }
+  const top = pareto(details, null, selectedWeek)[0];
+  if (top) {
+    insights.push({
+      tone: "info",
+      title: "최다 불량유형",
+      value: top.defectType,
+      detail: `${Math.round(top.defectQty).toLocaleString("ko-KR")}건 · 전체 불량의 ${(top.share * 100).toFixed(1)}%`,
+    });
+  }
+  const processHistory = new Map();
+  processWeeks.forEach((row) => {
+    const list = processHistory.get(row.process) || [];
+    list.push(row);
+    processHistory.set(row.process, list);
+  });
+  let biggestChange = null;
+  current.forEach((row) => {
+    const history = (processHistory.get(row.process) || []).sort((a, b) => a.weekNum - b.weekNum);
+    const index = history.findIndex((item) => item.week === selectedWeek);
+    if (index > 0) {
+      const delta = row.defectRate - history[index - 1].defectRate;
+      if (!biggestChange || Math.abs(delta) > Math.abs(biggestChange.delta)) {
+        biggestChange = { process: row.process, delta, previous: history[index - 1].week };
+      }
+    }
+  });
+  if (biggestChange) {
+    insights.push({
+      tone: biggestChange.delta > 0 ? "danger" : "success",
+      title: "전주 변동 최대",
+      value: biggestChange.process,
+      detail: `${biggestChange.previous} 대비 ${biggestChange.delta > 0 ? "▲" : "▼"} ${Math.abs(biggestChange.delta * 100).toFixed(3)}%p`,
+    });
+  }
+  return insights;
+}

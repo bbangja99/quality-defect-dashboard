@@ -5,11 +5,12 @@ import {
 } from "lucide-react";
 import {
   Bar, BarChart, CartesianGrid, Cell, ComposedChart, Legend, Line, LineChart,
-  ResponsiveContainer, Tooltip, XAxis, YAxis,
+  ReferenceLine, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis, ZAxis,
 } from "recharts";
 import { parseFiles } from "./lib/parsers.js";
 import {
-  PROCESS_COLORS, PROCESS_ORDER, aggregateProduction, pareto, weeklySummary,
+  PROCESS_COLORS, PROCESS_ORDER, aggregateProduction, buildInsights, defectTypeTrend,
+  pareto, processHeatmap, weeklySummary,
 } from "./lib/quality.js";
 import { downloadMaster, downloadTftPpt } from "./lib/exports.js";
 
@@ -34,6 +35,15 @@ function App() {
   const paretoRows = useMemo(
     () => pareto(data.details, selectedProcess === "전체" ? null : selectedProcess, activeWeek),
     [data.details, selectedProcess, activeWeek],
+  );
+  const typeTrend = useMemo(
+    () => defectTypeTrend(data.details, selectedProcess === "전체" ? null : selectedProcess),
+    [data.details, selectedProcess],
+  );
+  const heatmap = useMemo(() => processHeatmap(processWeeks), [processWeeks]);
+  const insights = useMemo(
+    () => buildInsights(processWeeks, data.details, activeWeek),
+    [processWeeks, data.details, activeWeek],
   );
   const trendData = completeSummary.map((row) => ({
     week: row.week,
@@ -131,6 +141,16 @@ function App() {
               <Kpi label="가중 손실률" value={pct(summary.find((row) => row.week === activeWeek)?.weightedLossRate || 0)} meta="공정검사·세팅" />
             </section>
 
+            <section className="insight-grid">
+              {insights.map((insight) => (
+                <article className={`insight ${insight.tone}`} key={insight.title}>
+                  <span>{insight.title}</span>
+                  <strong>{insight.value}</strong>
+                  <small>{insight.detail}</small>
+                </article>
+              ))}
+            </section>
+
             <section className="chart-grid">
               <article className="panel wide">
                 <PanelTitle title="완전 취합 주차 불량률 추이" caption="모든 주요 공정이 제출된 주차만 비교" />
@@ -183,6 +203,51 @@ function App() {
                 </ComposedChart>
               </ResponsiveContainer>
             </section>
+
+            <section className="analysis-grid">
+              <article className="panel">
+                <PanelTitle title="공정×주차 불량률 히트맵" caption="색이 진할수록 불량률이 높음 · 빈칸은 미제출" />
+                <Heatmap data={heatmap} />
+              </article>
+              <article className="panel">
+                <PanelTitle title="투입량 대비 불량·손실 관계" caption={`${activeWeek} · 원 크기는 불량수량`} />
+                <ResponsiveContainer width="100%" height={310}>
+                  <ScatterChart margin={{ top: 15, right: 20, bottom: 15, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e6edf3" />
+                    <XAxis type="number" dataKey="defectRatePct" name="불량률" unit="%" tick={{ fontSize: 10 }} />
+                    <YAxis type="number" dataKey="lossRatePct" name="손실률" unit="%" tick={{ fontSize: 10 }} />
+                    <ZAxis type="number" dataKey="defectQty" range={[90, 720]} />
+                    <Tooltip cursor={{ strokeDasharray: "3 3" }} content={<ScatterTooltip />} />
+                    <ReferenceLine x={activeRows.length ? activeRows.reduce((sum, row) => sum + row.defectRate * 100, 0) / activeRows.length : 0} stroke="#9fb3c8" strokeDasharray="4 4" />
+                    <Scatter data={activeRows.map((row) => ({
+                      ...row,
+                      defectRatePct: Number((row.defectRate * 100).toFixed(4)),
+                      lossRatePct: Number((row.lossRate * 100).toFixed(4)),
+                    }))}>
+                      {activeRows.map((row) => <Cell key={row.process} fill={PROCESS_COLORS[row.process]} />)}
+                    </Scatter>
+                  </ScatterChart>
+                </ResponsiveContainer>
+              </article>
+            </section>
+
+            <section className="panel">
+              <PanelTitle title="주요 불량유형 주차별 변화" caption={`최근 8주 · ${selectedProcess} 기준 상위 ${typeTrend.types.length}개 유형`} />
+              {typeTrend.rows.length ? (
+                <ResponsiveContainer width="100%" height={340}>
+                  <LineChart data={typeTrend.rows}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e6edf3" />
+                    <XAxis dataKey="week" tick={{ fontSize: 10 }} />
+                    <YAxis tick={{ fontSize: 10 }} />
+                    <Tooltip formatter={(value) => [`${fmt(value)}건`]} />
+                    <Legend />
+                    {typeTrend.types.map((type, index) => (
+                      <Line key={type} type="monotone" dataKey={type} stroke={["#2672ff", "#e5484d", "#f59e0b", "#16a34a", "#8b5cf6"][index]} strokeWidth={2.3} dot={{ r: 3 }} />
+                    ))}
+                  </LineChart>
+                </ResponsiveContainer>
+              ) : <div className="empty-analysis">여러 주차 파일을 추가하면 불량유형 변화가 표시됩니다.</div>}
+            </section>
           </>
         ) : (
           <DataView summary={summary} processWeeks={processWeeks} files={data.files} errors={data.errors} />
@@ -190,6 +255,33 @@ function App() {
       </main>
     </div>
   );
+}
+
+function Heatmap({ data }) {
+  const values = data.rows.flatMap((row) => row.cells.filter(Boolean).map((cell) => cell.defectRate));
+  const max = Math.max(...values, 0.001);
+  return (
+    <div className="heatmap">
+      <div className="heatmap-corner">공정</div>
+      {data.weeks.map((week) => <div className="heatmap-head" key={week}>{week.replace("26-", "")}</div>)}
+      {data.rows.flatMap((row) => [
+        <div className="heatmap-label" key={`${row.process}-label`}>{row.process}</div>,
+        ...row.cells.map((cell, index) => {
+          const intensity = cell ? Math.min(1, cell.defectRate / max) : 0;
+          const background = cell
+            ? `color-mix(in srgb, #2672ff ${18 + intensity * 72}%, white)`
+            : "#f1f4f7";
+          return <div className={`heatmap-cell ${cell ? "" : "missing"}`} style={{ background }} key={`${row.process}-${data.weeks[index]}`} title={cell ? `${row.process} ${data.weeks[index]}: ${pct(cell.defectRate)}` : "미제출"}>{cell ? (cell.defectRate * 100).toFixed(2) : "—"}</div>;
+        }),
+      ])}
+    </div>
+  );
+}
+
+function ScatterTooltip({ active, payload }) {
+  if (!active || !payload?.length) return null;
+  const row = payload[0].payload;
+  return <div className="chart-tooltip"><b>{row.process}</b><span>불량률 {row.defectRatePct}%</span><span>손실률 {row.lossRatePct}%</span><span>투입 {fmt(row.inputQty)} EA</span></div>;
 }
 
 function Kpi({ label, value, meta, accent }) {

@@ -145,6 +145,33 @@ export async function downloadTftPpt(production, details, selectedWeek) {
     chartColors: ["F59E0B"], showValue: true, dataLabelPosition: "outEnd",
   });
 
+  const recentWeeks = summary.slice(-8).map((row) => row.week);
+  slide = pptx.addSlide();
+  addTitle(slide, "최근 공정별 불량률 추이", "공정 간 이상 주차와 개선 효과 비교");
+  slide.addChart(pptx.ChartType.line, PROCESS_ORDER.map((process) => ({
+    name: process,
+    labels: recentWeeks,
+    values: recentWeeks.map((week) => {
+      const row = processWeeks.find((item) => item.week === week && item.process === process);
+      return row ? Number((row.defectRate * 100).toFixed(4)) : null;
+    }),
+  })), {
+    x: 0.65, y: 1.3, w: 8.15, h: 5.55,
+    catAxisLabelFontFace: "Malgun Gothic", catAxisLabelFontSize: 10,
+    valAxisLabelFontSize: 9, valAxisTitle: "불량률 (%)",
+    showLegend: true, legendPos: "b", showTitle: false,
+    chartColors: PROCESS_ORDER.map((process) => PROCESS_COLORS[process].replace("#", "")),
+    showValue: false, lineSize: 2.2, showMarker: true,
+  });
+  const ranking = [...weekRows].sort((a, b) => b.defectRate - a.defectRate);
+  slide.addText([
+    { text: `${target.week} 위험도 순위\n`, options: { bold: true, color: "15324B", fontSize: 16 } },
+    ...ranking.flatMap((row, index) => [
+      { text: `${index + 1}. ${row.process}`, options: { bold: true, fontSize: 13, breakLine: true, color: PROCESS_COLORS[row.process] } },
+      { text: `   불량률 ${pct(row.defectRate)} · 손실률 ${pct(row.lossRate)}`, options: { fontSize: 10.5, color: "61758A", breakLine: true } },
+    ]),
+  ], { x: 9.08, y: 1.55, w: 3.6, h: 4.55, margin: 0.2, fill: { color: "F4F7FA" }, line: { color: "D9E2EC" }, valign: "top" });
+
   for (const process of PROCESS_ORDER) {
     const row = weekRows.find((item) => item.process === process);
     if (!row) continue;
