@@ -12,7 +12,7 @@ import pandas as pd
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from src import pipeline, aggregate, charts, config, master_excel  # noqa: E402
+from src import pipeline, aggregate, charts, config, master_excel, quality_checks  # noqa: E402
 
 st.set_page_config(page_title="공정별 불량률 대시보드", page_icon="📊", layout="wide")
 
@@ -46,14 +46,14 @@ def _load_folder(folder: str):
 
 
 def _load_uploads(uploads: dict):
-    results = {}
+    results = []
     for proc, files in uploads.items():
         for f in files or []:
             try:
-                results[proc] = pipeline.parse_one(proc, f)
+                results.append((proc, pipeline.parse_one(proc, f)))
             except Exception as e:
                 st.warning(f"[{proc}] {getattr(f,'name','파일')} 파싱 실패: {e}")
-    out = pipeline.combine(results)
+    out = pipeline.combine_many(results)
     return out.production, out.defect_detail, out.warnings, {}
 
 
@@ -92,10 +92,14 @@ def main():
     st.sidebar.header("필터")
     weeks = sorted(production["week"].dropna().unique(),
                    key=lambda w: production.loc[production["week"] == w, "week_num"].iloc[0])
+    default_start = weeks[max(0, len(weeks) - 8)]
     wsel = st.sidebar.select_slider("주차 범위", options=weeks,
-                                    value=(weeks[0], weeks[-1])) if len(weeks) > 1 else (weeks[0], weeks[0])
+                                    value=(default_start, weeks[-1])) if len(weeks) > 1 else (weeks[0], weeks[0])
     procs = [p for p in config.PROCESSES if p in set(production["process"])]
     psel = st.sidebar.multiselect("공정", procs, default=procs)
+    if not psel:
+        st.warning("분석할 공정을 한 개 이상 선택하세요.")
+        st.stop()
 
     lo = production.loc[production["week"] == wsel[0], "week_num"].iloc[0]
     hi = production.loc[production["week"] == wsel[1], "week_num"].iloc[0]
@@ -105,6 +109,8 @@ def main():
 
     proc_week = aggregate.aggregate_by_process_week(prod_f)
     summary = aggregate.weekly_summary(proc_week)
+    status = quality_checks.submission_status(prod_f, psel)
+    quality_log = quality_checks.build_quality_log(prod_f, det_f, psel)
 
     if used:
         st.sidebar.markdown("**사용 파일**")
@@ -118,18 +124,36 @@ def main():
     # 전체 현황
     with t_overview:
         if not summary.empty:
-            latest = summary.sort_values("week_num").iloc[-1]
+            complete_weeks = set(status.loc[status["complete"], "week"])
+            complete_summary = summary[summary["week"].isin(complete_weeks)]
+            latest = (complete_summary if not complete_summary.empty else summary).sort_values("week_num").iloc[-1]
+            latest_status = status[status["week"] == latest["week"]].iloc[0]
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("최신 주차", latest["week"])
+            c1.metric("최신 완전 취합 주차", latest["week"],
+                      f"{latest_status['submitted']}/{latest_status['expected']}개 공정")
             c2.metric("가중 불량률", f"{latest['weighted_defect_rate']:.3%}")
             c3.metric("평균 불량률", f"{latest['avg_defect_rate']:.3%}")
             c4.metric("가중 손실률", f"{latest['weighted_loss_rate']:.3%}")
-            if len(summary) > 1:
-                prev = summary.sort_values("week_num").iloc[-2]
+            if len(complete_summary) > 1:
+                prev = complete_summary.sort_values("week_num").iloc[-2]
                 delta = latest["weighted_defect_rate"] - prev["weighted_defect_rate"]
-                st.caption(f"전주 대비 가중 불량률 {'▲' if delta>0 else '▼'} {abs(delta):.3%}")
-            st.plotly_chart(charts.overall_trend(summary), use_container_width=True)
+                st.caption(
+                    f"이전 완전 취합 주차({prev['week']}) 대비 가중 불량률 "
+                    f"{'▲' if delta > 0 else '▼'} {abs(delta):.3%}")
+            if not status[~status["complete"]].empty:
+                st.info("일부 주차는 공정 파일이 모두 없어 전체 평균 비교에서 제외됩니다.")
+            overall_data = complete_summary if not complete_summary.empty else summary
+            st.plotly_chart(charts.overall_trend(overall_data), use_container_width=True)
             st.plotly_chart(charts.process_trend(proc_week), use_container_width=True)
+            st.subheader("주차별 공정 제출 현황")
+            st.dataframe(
+                status[["week", "submitted", "expected", "complete", "missing"]],
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "week": "주차", "submitted": "제출", "expected": "대상",
+                    "complete": "완전 취합", "missing": "미제출 공정",
+                },
+            )
         else:
             st.info("표시할 집계가 없습니다.")
 
@@ -191,6 +215,8 @@ def main():
                 st.write("⚠", w)
         else:
             st.success("경고 없음")
+        st.subheader("자동 데이터 품질 점검")
+        st.dataframe(quality_log, use_container_width=True, hide_index=True)
 
 
 if __name__ == "__main__":
